@@ -1,6 +1,6 @@
 {
 	"name": "Piggyback",
-	"version_number": "1.0.1",
+	"version_number": "1.1.0",
 	"description": "Lets you carry your mates even when they're not passed out.",
 	"website_url": "https://github.com/nakaz0ra/peak-piggyback",
 	"dependencies": [
