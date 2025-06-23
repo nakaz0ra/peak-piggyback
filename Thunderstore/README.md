@@ -18,8 +18,8 @@ If a player is sprinting, climbing, jumping, crouching, holding an item, or reac
 able to pick them up. This is to help prevent trolling or picking them up on accident.
 
 ## Config
-- **SpectateView**: If enabled, the camera will switch to the spectate view while being carried.
-If disabled, the camera will remain in the first-person view while being carried.
+- **SpectateView**: If true, the camera will switch to the spectate view while being carried.
+If false, the camera will remain in the first-person view while being carried.
 Note that you'll only be able to spectate the player carrying you.
 - **HoldToCarryTime**: The time in seconds you need to hold the interact button to start carrying another player.
 If 0, you will start carrying the player immediately upon pressing the interact button.

@@ -42,8 +42,8 @@ public class Piggyback : BaseUnityPlugin
     {
         s_spectateViewSetting = Config.Bind("General", "SpectateView", true,
             new ConfigDescription(
-                "If enabled, the camera will switch to the spectate view while being carried. " +
-                "If disabled, the camera will remain in the first-person view while being carried. " +
+                "If true, the camera will switch to the spectate view while being carried. " +
+                "If false, the camera will remain in the first-person view while being carried. " +
                 "Note that you'll only be able to spectate the player carrying you."));
         s_holdToCarrySetting = Config.Bind("General", "HoldToCarryTime", 1.5f,
             new ConfigDescription(
@@ -97,6 +97,12 @@ public class Piggyback : BaseUnityPlugin
             // If the local player has a backpack, don't allow carrying
             if (!Player.localPlayer.backpackSlot.IsEmpty()) return;
             // if (!Player.localPlayer.backpackSlot.IsEmpty() && !___character.player.backpackSlot.IsEmpty()) return;
+
+            // If the local player character is climbing or rope/vine climbing, don't allow carrying
+            if (Character.localCharacter.data.isClimbing
+                || Character.localCharacter.data.isRopeClimbing
+                || Character.localCharacter.data.isVineClimbing)
+                return;
 
             // If the character is holding an item or doing an illegal action, don't allow carrying
             if ((bool)(Object)___character.data.currentItem || IsCharacterDoingIllegalCarryActions(___character)) return;

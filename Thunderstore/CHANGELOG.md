@@ -1,7 +1,7 @@
 ## v1.2.0
 - Added a new config setting:
-  - **SpectateView**: If enabled, the camera will switch to the spectate view while being carried.
-  If disabled, the camera will remain in the first-person view while being carried.
+  - **SpectateView**: If true, the camera will switch to the spectate view while being carried.
+  If false, the camera will remain in the first-person view while being carried.
   Note that you'll only be able to spectate the player carrying you.
 - Reduced the max distance at which you can be from the player you want to carry to be able to pick them up.
 If they are passed out the distance is still the same as vanilla.
