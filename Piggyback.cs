@@ -1,4 +1,6 @@
 ﻿using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Reflection;
 using BepInEx;
 using BepInEx.Configuration;
@@ -6,6 +8,8 @@ using BepInEx.Logging;
 using HarmonyLib;
 using Photon.Pun;
 using UnityEngine;
+using UnityEngine.InputSystem;
+using Zorro.Core.Serizalization;
 using Object = UnityEngine.Object;
 
 namespace Piggyback;
@@ -15,11 +19,43 @@ public class Piggyback : BaseUnityPlugin
 {
     internal static new ManualLogSource Logger;
 
+    private readonly Harmony m_harmony = new(MyPluginInfo.PLUGIN_GUID);
+
+    private static ConfigEntry<bool> s_enablePiggybackSetting;
+    private static ConfigEntry<bool> s_allowPiggybackByOthersSetting;
     private static ConfigEntry<bool> s_spectateViewSetting;
     private static ConfigEntry<float> s_holdToCarrySetting;
-    private static bool s_isHoldToCarryPatchApplied = false;
+    private static ConfigEntry<bool> s_swapBackpackSetting;
+    private static ConfigEntry<string> s_gamepadDropKeyBindingSetting;
 
-    private readonly Harmony m_harmony = new(MyPluginInfo.PLUGIN_GUID);
+    private static readonly Dictionary<string, string> GamepadKeysToControlPath = new()
+    {
+        { "DpadUp", "dpad/up" },
+        { "DpadDown", "dpad/down" },
+        { "DpadLeft", "dpad/left" },
+        { "DpadRight", "dpad/right" },
+        { "North", "buttonSouth" },
+        { "East", "buttonEast" },
+        { "South", "buttonSouth" },
+        { "West", "buttonWest" },
+        { "LeftStickButton", "leftStickPress" },
+        { "RightStickButton", "rightStickPress" },
+        { "LeftShoulder", "leftShoulder" },
+        { "RightShoulder", "rightShoulder" },
+        { "LeftTrigger", "leftTrigger" },
+        { "RightTrigger", "rightTrigger" },
+        { "Start", "start" },
+        { "Select", "select" }
+    };
+
+    private static List<InputAction> s_gamepadDropActions = [];
+
+    private static readonly Action<CharacterCarrying, Character> DropFromCarryDelegate =
+        (Action<CharacterCarrying, Character>)Delegate.CreateDelegate(
+            typeof(Action<CharacterCarrying, Character>),
+            null,
+            typeof(CharacterCarrying).GetMethod("Drop", BindingFlags.Instance | BindingFlags.NonPublic)!
+        );
 
     private void Awake()
     {
@@ -27,54 +63,136 @@ public class Piggyback : BaseUnityPlugin
 
         SetupConfig();
 
-        m_harmony.PatchAll(typeof(CanBeCarriedPatch));
-        m_harmony.PatchAll(typeof(SpectateViewPatch));
-        if (s_holdToCarrySetting.Value > 0.0f)
+        if (s_enablePiggybackSetting.Value)
         {
+            m_harmony.PatchAll(typeof(CanBeCarriedPatch));
+            m_harmony.PatchAll(typeof(SpectateViewPatch));
             m_harmony.PatchAll(typeof(HoldToCarryPatch));
-            s_isHoldToCarryPatchApplied = true;
         }
+        m_harmony.PatchAll(typeof(BackpackSwapOnCarryPatch));
 
         Logger.LogInfo($"Plugin {MyPluginInfo.PLUGIN_NAME} loaded");
     }
 
     private void SetupConfig()
     {
+        s_enablePiggybackSetting = Config.Bind("General", "EnablePiggyback", true,
+            "If false, you won't be able to piggyback others.\n" +
+            "The AllowPiggybackByOthers, SwapBackpack, and GamepadDropKeybind settings will still take effect, " +
+            "but you won't be able to carry players that are not passed out.");
+        s_allowPiggybackByOthersSetting = Config.Bind("General", "AllowPiggybackByOthers", true,
+            "If false, you'll be immediately dropped whenever a player attempts to carry you " +
+            "while you're not passed out. Use this if you want to fully prevent players from picking you up.");
         s_spectateViewSetting = Config.Bind("General", "SpectateView", true,
-            new ConfigDescription(
-                "If true, the camera will switch to the spectate view while being carried. " +
-                "If false, the camera will remain in the first-person view while being carried. " +
-                "Note that you'll only be able to spectate the player carrying you."));
+            "If true, the camera will switch to the spectate view while being carried.\n" +
+            "If false, the camera will remain in the first-person view while being carried.\n" +
+            "Note that you'll only be able to spectate the player carrying you.");
         s_holdToCarrySetting = Config.Bind("General", "HoldToCarryTime", 1.5f,
             new ConfigDescription(
-                "The time in seconds you need to hold the interact button to start carrying another player. " +
-                "If 0, you will start carrying the player immediately upon pressing the interact button. " +
+                "The time in seconds you need to hold the interact button to start carrying another player.\n" +
+                "If 0, you will start carrying the player immediately upon pressing the interact button.\n" +
                 "If the player is passed out, you will start carrying them immediately even if this is set to a " +
-                "value greater than 0.", new AcceptableValueRange<float>(0.0f, 5.0f)));
+                "value greater than 0.", new AcceptableValueRange<float>(0.0f, 5.0f)
+            ));
+        s_swapBackpackSetting = Config.Bind("General", "SwapBackpack", true,
+            "(Experimental) If true, if you have a backpack and start carrying another player who does not " +
+            "have a backpack, the player you're carrying will automatically equip your backpack.\n" +
+            "The backpack will be returned to you when you drop the player.\n" +
+            "If false or if the player you want to carry already has a backpack, you must manually drop your " +
+            "backpack before you can carry that player.");
+        s_gamepadDropKeyBindingSetting = Config.Bind("Controls", "GamepadDropKeybind",
+            "LeftShoulder+RightShoulder",
+            "The key binding to drop the player you're carrying. " +
+            "This only applies to Gamepad, the binding on keyboard should be the Number 4 key by default.\n" +
+            "You can combine multiple keys by separating them with a plus (+) sign. This would require you to press " +
+            "all the given keys at the same time to drop the player.\n" +
+            "Acceptable Gamepad Keys:\n" + string.Join(", ", GamepadKeysToControlPath.Keys));
 
-        s_holdToCarrySetting.SettingChanged += (sender, args) =>
+        s_gamepadDropKeyBindingSetting.SettingChanged += (_, _) => SetupGamepadDropAction();
+        SetupGamepadDropAction();
+    }
+
+    private static void SetupGamepadDropAction()
+    {
+        if (s_gamepadDropActions.Count > 0)
         {
-            if (s_holdToCarrySetting.Value <= 0.0f) return;
-            if (s_isHoldToCarryPatchApplied)
+            foreach (var action in s_gamepadDropActions)
             {
-                Logger.LogInfo($"Hold to Carry time set to {s_holdToCarrySetting.Value} seconds.");
+                action.Disable();
+                action.Dispose();
+            }
+            s_gamepadDropActions.Clear();
+        }
+        var bindings = new List<string>();
+        bool isInvalid = false;
+        foreach (var key in s_gamepadDropKeyBindingSetting.Value.Split('+'))
+        {
+            if (GamepadKeysToControlPath.TryGetValue(key.Trim(), out var controlPath))
+            {
+                bindings.Add($"<Gamepad>/{controlPath}");
             }
             else
             {
-                m_harmony.PatchAll(typeof(HoldToCarryPatch));
-                s_isHoldToCarryPatchApplied = true;
-                Logger.LogInfo($"Hold to Carry enabled, time set to {s_holdToCarrySetting.Value} seconds.");
+                Logger.LogWarning($"Unknown gamepad key: {key.Trim()}");
+                isInvalid = true;
             }
-        };
+        }
+        if (isInvalid)
+        {
+            var defaultBinding = (string)s_gamepadDropKeyBindingSetting.DefaultValue;
+            Logger.LogError($"Invalid gamepad key binding detected. Falling back to default binding: {defaultBinding}");
+            bindings.Clear();
+            foreach (var key in defaultBinding.Split('+'))
+            {
+                if (GamepadKeysToControlPath.TryGetValue(key.Trim(), out var controlPath))
+                    bindings.Add($"<Gamepad>/{controlPath}");
+                else
+                    Logger.LogError($"Unknown default gamepad key: {key.Trim()}");
+            }
+        }
+        for (int i = 0; i < bindings.Count; i++)
+        {
+            var action = new InputAction($"DropCarry_{i}", InputActionType.Button, bindings[i]);
+            s_gamepadDropActions.Add(action);
+            action.Enable();
+        }
+    }
+
+    private void Update()
+    {
+        if (!(bool)(Object)Character.localCharacter) return;
+        if ((bool)(Object)Character.localCharacter.data.carriedPlayer && s_gamepadDropActions.Count > 0)
+        {
+            if ((s_gamepadDropActions.Count == 1 && s_gamepadDropActions[0].WasPressedThisFrame())
+                || s_gamepadDropActions.All(action => action.IsPressed()))
+                DropPlayerFromCarry(Character.localCharacter.data.carriedPlayer);
+        }
+        if (!s_allowPiggybackByOthersSetting.Value)
+        {
+            if (!Character.localCharacter.data.fullyPassedOut)
+            {
+                DropPlayerFromCarry(Character.localCharacter);
+                return;
+            }
+        }
+        if (s_enablePiggybackSetting.Value)
+        {
+            if (!Character.localCharacter.data.fullyPassedOut && IsCharacterDoingIllegalCarryActions(Character.localCharacter))
+                DropPlayerFromCarry(Character.localCharacter);
+        }
+    }
+
+    private static void DropPlayerFromCarry(Character character)
+    {
+        if (!(bool)(Object)character.data.carrier) return;
+        DropFromCarryDelegate(character.data.carrier.refs.carriying, character);
     }
 
     private static bool IsCharacterDoingIllegalCarryActions(Character character)
     {
         return character.data.isSprinting
             || character.data.isJumping
-            || character.data.isClimbing
-            || character.data.isRopeClimbing
-            || character.data.isVineClimbing
+            || character.data.isClimbingAnything
             || character.data.isCrouching
             || character.data.isReaching;
     }
@@ -94,15 +212,17 @@ public class Piggyback : BaseUnityPlugin
             // If the character is dead, don't allow carrying
             if (___character.data.dead) return;
 
-            // If the local player has a backpack, don't allow carrying
-            if (!Player.localPlayer.backpackSlot.IsEmpty()) return;
-            // if (!Player.localPlayer.backpackSlot.IsEmpty() && !___character.player.backpackSlot.IsEmpty()) return;
+            if (s_swapBackpackSetting.Value)
+            {
+                // When the SwapBackpack setting is enabled, don't allow carrying if both the local player
+                // and the target carry character have a backpack.
+                if (Player.localPlayer.backpackSlot.hasBackpack && ___character.player.backpackSlot.hasBackpack) return;
+            }
+            // If the SwapBackpack setting is disabled, don't allow carrying only if the local player has a backpack
+            else if (Player.localPlayer.backpackSlot.hasBackpack) return;
 
-            // If the local player character is climbing or rope/vine climbing, don't allow carrying
-            if (Character.localCharacter.data.isClimbing
-                || Character.localCharacter.data.isRopeClimbing
-                || Character.localCharacter.data.isVineClimbing)
-                return;
+            // If the local player character is climbing anything, don't allow carrying
+            if (Character.localCharacter.data.isClimbingAnything) return;
 
             // If the character is holding an item or doing an illegal action, don't allow carrying
             if ((bool)(Object)___character.data.currentItem || IsCharacterDoingIllegalCarryActions(___character)) return;
@@ -137,40 +257,37 @@ public class Piggyback : BaseUnityPlugin
         [HarmonyPrefix]
         private static bool CharacterCarryingUpdatePrefix(Character ___character)
         {
-            // Note: When we return true, the original method will run, which will inevitably see that the
+            // Note: When true is returned, the original method will run, which will inevitably see that the
             // carried player is not fully passed out and will drop them.
-            if (___character.IsLocal && (bool)(Object)___character.data.carrier)
-            {
-                if (!___character.data.fullyPassedOut && IsCharacterDoingIllegalCarryActions(___character))
-                {
-                    ___character.data.carrier.photonView.RPC("RPCA_Drop", RpcTarget.All, ___character.photonView);
-                    return false;
-                }
-                return true;
-            }
-
+            if (!___character.refs.view.IsMine) return true;
             if (!(bool)(Object)___character.data.carriedPlayer) return true;
 
             // Drop the carried player if they are holding an item
             if ((bool)(Object)___character.data.carriedPlayer.data.currentItem) return true;
-            // Drop the carried player if they are doing illegal carry actions unless the player carrying them is climbing
-            if (IsCharacterDoingIllegalCarryActions(___character.data.carriedPlayer) &&
-                !(___character.data.isClimbing || ___character.data.isRopeClimbing || ___character.data.isVineClimbing))
+            // Drop the carried player if they are doing illegal carry actions
+            if (IsCharacterDoingIllegalCarryActions(___character.data.carriedPlayer))
                 return true;
 
             if (!___character.data.carriedPlayer.data.dead &&
                 !___character.input.selectBackpackWasPressed && !___character.data.fullyPassedOut &&
-                !___character.data.dead || !___character.refs.view.IsMine)
+                !___character.data.dead)
                 return false;
 
             return true;
+        }
+
+        [HarmonyPatch(typeof(CharacterCarrying), "CarrierGone")]
+        [HarmonyPostfix]
+        private static void CharacterCarryingCarrierGonePostfix(Character ___character)
+        {
+            ___character.data.isCarried = false;
         }
 
         [HarmonyPatch(typeof(CharacterInput), "Sample")]
         [HarmonyPostfix]
         private static void CharacterInputSamplePostfix(CharacterInput __instance)
         {
-            if (Character.localCharacter.data.fullyPassedOut || !(bool)(Object)Character.localCharacter.data.carrier)
+            if (Character.localCharacter.data.fullyPassedOut || !Character.localCharacter.data.isCarried)
                 return;
             __instance.movementInput = Vector2.zero;
             __instance.interactWasPressed = false;
@@ -199,7 +316,7 @@ public class Piggyback : BaseUnityPlugin
         [HarmonyPostfix]
         private static bool CharacterInputSelectSlotWasPressedPostfix(bool originalResult, CharacterInput __instance)
         {
-            if (!Character.localCharacter.data.fullyPassedOut && (bool)(Object)Character.localCharacter.data.carrier)
+            if (!Character.localCharacter.data.fullyPassedOut && Character.localCharacter.data.isCarried)
                 return false;
             return originalResult;
         }
@@ -220,6 +337,9 @@ public class Piggyback : BaseUnityPlugin
                 AccessTools.PropertySetter(typeof(MainCameraMovement), "specCharacter")
             );
 
+        private static float? m_defaultSpectateZoomMax = null;
+        private static float m_customSpectateZoomMax = 3f;
+
         [HarmonyPatch(typeof(MainCameraMovement), "LateUpdate")]
         [HarmonyPostfix]
         static void MainCameraMovementLateUpdatePostfix(
@@ -239,15 +359,18 @@ public class Piggyback : BaseUnityPlugin
 
         [HarmonyPatch(typeof(MainCameraMovement), "HandleSpecSelection")]
         [HarmonyPrefix]
-        static bool HandleSpecSelectionPrefix(ref bool __result)
+        static bool HandleSpecSelectionPrefix(ref bool __result, MainCameraMovement __instance)
         {
             if (!Character.localCharacter.data.fullyPassedOut && (bool)(Object)Character.localCharacter.data.carrier)
             {
                 if (!(bool)(Object)MainCameraMovement.specCharacter)
                     SetSpecCharacter(Character.localCharacter.data.carrier);
+                m_defaultSpectateZoomMax ??= __instance.spectateZoomMax;
+                __instance.spectateZoomMax = m_customSpectateZoomMax;
                 __result = true;
                 return false;
             }
+            if (m_defaultSpectateZoomMax.HasValue) __instance.spectateZoomMax = m_defaultSpectateZoomMax.Value;
             return true;
         }
     }
@@ -320,5 +443,43 @@ public class Piggyback : BaseUnityPlugin
         public void ReleaseInteract(Character interactor) {}
 
         public bool holdOnFinish => false;
+    }
+
+    class BackpackSwapOnCarryPatch
+    {
+        private static bool s_wasBackpackSwapped = false;
+
+        [HarmonyPatch(typeof(CharacterCarrying), "StartCarry")]
+        [HarmonyPrefix]
+        static bool StartCarryPrefix(ref Character ___character, Character target)
+        {
+            if (!s_swapBackpackSetting.Value) return true;
+            s_wasBackpackSwapped = false;
+            BackpackSlot backpackSlot = ___character.player.backpackSlot;
+            if (!backpackSlot.hasBackpack || target.player.backpackSlot.hasBackpack) return true;
+            target.player.backpackSlot = backpackSlot;
+            ___character.player.backpackSlot = new BackpackSlot(3);
+            var characterManagedArray = IBinarySerializable.ToManagedArray(new InventorySyncData(___character.player.itemSlots, ___character.player.backpackSlot, ___character.player.tempFullSlot));
+            ___character.player.photonView.RPC("SyncInventoryRPC", RpcTarget.All, characterManagedArray, true);
+            var targetManagedArray = IBinarySerializable.ToManagedArray(new InventorySyncData(target.player.itemSlots, target.player.backpackSlot, target.player.tempFullSlot));
+            target.player.photonView.RPC("SyncInventoryRPC", RpcTarget.All, targetManagedArray, true);
+            s_wasBackpackSwapped = true;
+            return true;
+        }
+
+        [HarmonyPatch(typeof(CharacterCarrying), "Drop")]
+        [HarmonyPostfix]
+        static void DropPostfix(ref Character ___character, Character target)
+        {
+            if (!s_swapBackpackSetting.Value || !s_wasBackpackSwapped) return;
+            BackpackSlot backpackSlot = target.player.backpackSlot;
+            if (!backpackSlot.hasBackpack) return;
+            ___character.player.backpackSlot = backpackSlot;
+            target.player.backpackSlot = new BackpackSlot(3);
+            var targetManagedArray = IBinarySerializable.ToManagedArray(new InventorySyncData(target.player.itemSlots, target.player.backpackSlot, target.player.tempFullSlot));
+            target.player.photonView.RPC("SyncInventoryRPC", RpcTarget.All, targetManagedArray, true);
+            var characterManagedArray = IBinarySerializable.ToManagedArray(new InventorySyncData(___character.player.itemSlots, ___character.player.backpackSlot, ___character.player.tempFullSlot));
+            ___character.player.photonView.RPC("SyncInventoryRPC", RpcTarget.All, characterManagedArray, true);
+        }
     }
 }
