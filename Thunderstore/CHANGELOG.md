@@ -1,3 +1,9 @@
+## v1.3.1
+- Minor fixes.
+- You can now set the **GamepadDropKeybind** setting to `None` to disable the custom keybind to drop the carried player.
+  - Note: Since game version 1.6, this setting is no longer needed as you can now "select" the carried player and drop
+  them when using a gamepad. However, you can still use this setting if you prefer to use your own keybind.
+
 ## v1.3.0
 - Added the following new config settings and respective features:
   - **EnablePiggyback** - If `false`, you won't be able to piggyback others.
@@ -10,7 +16,7 @@
   the player. If `false` or if the player you want to carry already has a backpack, you must manually drop your backpack
   before you can carry that player. **Defaults to `true`**.
   - **GamepadDropKeybind** - The key binding to drop the player you're carrying. This only applies to Gamepad,
-  the binding on keyboard should be the Number 4 key by default. Defaults to `LeftShoulder+RightShoulder`.
+  the binding on keyboard should be the Number 4 key by default. **Defaults to `LeftShoulder+RightShoulder`**.
 - You'll no longer be able to pick up players while you're in the middle of climbing something.
 - Reduced how much you can zoom out the camera in the spectate view while being carried when you're not passed out.
 - Fixed a bug that could lock you in the spectate view if the player carrying you disconnected or left the game.

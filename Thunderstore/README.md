@@ -3,8 +3,11 @@ Have you ever been in a situation where your mate went for a bathroom break or j
 thought "if only I could carry them"? Then this mod is for you! This mod allows you to carry other players even when
 they're not passed out.
 
-## Installation
-Drag and drop the **Piggyback.dll** file into your PEAK BepInEx plugins folder.
+## Manual Installation
+1. Download BepInEx from [here](https://thunderstore.io/c/peak/p/BepInEx/BepInExPack_PEAK/) and follow the
+   installation instructions provided there.
+2. Download this mod and drag and drop the **Piggyback.dll** file into your PEAK BepInEx plugins folder located at:
+   `<game directory>\BepInEx\plugins`
 
 ## Usage
 Only the players who intend to carry others need to have the mod installed, the players being carried don't need it,
@@ -46,7 +49,7 @@ If the player is passed out, you will start carrying them immediately even if th
 **Defaults to `1.5`**.
 
 
-- **SwapBackpack** (Experimental)\
+- **SwapBackpack**\
 If `true`, if you have a backpack and start carrying another player who does not have a backpack,
 the player you're carrying will automatically equip your backpack.
 The backpack will be returned to you when you drop the player.\
@@ -61,6 +64,6 @@ This only applies to Gamepad, the binding on keyboard should be the Number 4 key
 You can combine multiple keys by separating them with a plus (`+`) sign. This would require you to press all the given
 keys at the same time to drop the player.\
 **Acceptable Gamepad Keys:**\
-`DpadUp`, `DpadDown`, `DpadLeft`, `DpadRight`, `North`, `East`, `South`, `West`, `LeftStickButton`, `RightStickButton`, 
-`LeftShoulder`, `RightShoulder`, `LeftTrigger`, `RightTrigger`, `Start`, `Select`\
+`None`, `DpadUp`, `DpadDown`, `DpadLeft`, `DpadRight`, `North`, `East`, `South`, `West`, `LeftStickButton`,
+`RightStickButton`, `LeftShoulder`, `RightShoulder`, `LeftTrigger`, `RightTrigger`, `Start`, `Select`\
 **Defaults to `LeftShoulder+RightShoulder`**.

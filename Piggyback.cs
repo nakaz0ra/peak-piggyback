@@ -28,7 +28,7 @@ public class Piggyback : BaseUnityPlugin
     private static ConfigEntry<bool> s_swapBackpackSetting;
     private static ConfigEntry<string> s_gamepadDropKeyBindingSetting;
 
-    private static readonly Dictionary<string, string> GamepadKeysToControlPath = new()
+    private static readonly Dictionary<string, string> GamepadKeysToControlPath = new(StringComparer.OrdinalIgnoreCase)
     {
         { "DpadUp", "dpad/up" },
         { "DpadDown", "dpad/down" },
@@ -95,7 +95,7 @@ public class Piggyback : BaseUnityPlugin
                 "value greater than 0.", new AcceptableValueRange<float>(0.0f, 5.0f)
             ));
         s_swapBackpackSetting = Config.Bind("General", "SwapBackpack", true,
-            "(Experimental) If true, if you have a backpack and start carrying another player who does not " +
+            "If true, if you have a backpack and start carrying another player who does not " +
             "have a backpack, the player you're carrying will automatically equip your backpack.\n" +
             "The backpack will be returned to you when you drop the player.\n" +
             "If false or if the player you want to carry already has a backpack, you must manually drop your " +
@@ -106,7 +106,7 @@ public class Piggyback : BaseUnityPlugin
             "This only applies to Gamepad, the binding on keyboard should be the Number 4 key by default.\n" +
             "You can combine multiple keys by separating them with a plus (+) sign. This would require you to press " +
             "all the given keys at the same time to drop the player.\n" +
-            "Acceptable Gamepad Keys:\n" + string.Join(", ", GamepadKeysToControlPath.Keys));
+            "Acceptable Gamepad Keys:\nNone, " + string.Join(", ", GamepadKeysToControlPath.Keys));
 
         s_gamepadDropKeyBindingSetting.SettingChanged += (_, _) => SetupGamepadDropAction();
         SetupGamepadDropAction();
@@ -114,6 +114,7 @@ public class Piggyback : BaseUnityPlugin
 
     private static void SetupGamepadDropAction()
     {
+        var value = s_gamepadDropKeyBindingSetting.Value.Trim();
         if (s_gamepadDropActions.Count > 0)
         {
             foreach (var action in s_gamepadDropActions)
@@ -123,9 +124,14 @@ public class Piggyback : BaseUnityPlugin
             }
             s_gamepadDropActions.Clear();
         }
-        var bindings = new List<string>();
+        if (value.ToLower() == "none")
+        {
+            Logger.LogInfo("Gamepad drop key binding is set to 'None'. Disabling custom drop key binding.");
+            return;
+        }
+        var bindings = new HashSet<string>();
         bool isInvalid = false;
-        foreach (var key in s_gamepadDropKeyBindingSetting.Value.Split('+'))
+        foreach (var key in value.Split('+'))
         {
             if (GamepadKeysToControlPath.TryGetValue(key.Trim(), out var controlPath))
             {
@@ -150,12 +156,13 @@ public class Piggyback : BaseUnityPlugin
                     Logger.LogError($"Unknown default gamepad key: {key.Trim()}");
             }
         }
-        for (int i = 0; i < bindings.Count; i++)
+        foreach (var binding in bindings)
         {
-            var action = new InputAction($"DropCarry_{i}", InputActionType.Button, bindings[i]);
+            var action = new InputAction($"DropCarry_{binding}", InputActionType.Button, binding);
             s_gamepadDropActions.Add(action);
             action.Enable();
         }
+        Logger.LogInfo("Custom drop key binding set to: " + string.Join(" + ", bindings));
     }
 
     private void Update()
@@ -169,7 +176,7 @@ public class Piggyback : BaseUnityPlugin
         }
         if (!s_allowPiggybackByOthersSetting.Value)
         {
-            if (!Character.localCharacter.data.fullyPassedOut)
+            if (!Character.localCharacter.data.fullyPassedOut && Character.localCharacter.data.isCarried)
             {
                 DropPlayerFromCarry(Character.localCharacter);
                 return;
@@ -177,7 +184,8 @@ public class Piggyback : BaseUnityPlugin
         }
         if (s_enablePiggybackSetting.Value)
         {
-            if (!Character.localCharacter.data.fullyPassedOut && IsCharacterDoingIllegalCarryActions(Character.localCharacter))
+            if (!Character.localCharacter.data.fullyPassedOut && Character.localCharacter.data.isCarried
+                && IsCharacterDoingIllegalCarryActions(Character.localCharacter))
                 DropPlayerFromCarry(Character.localCharacter);
         }
     }
@@ -269,7 +277,7 @@ public class Piggyback : BaseUnityPlugin
                 return true;
 
             if (!___character.data.carriedPlayer.data.dead &&
-                !___character.input.selectBackpackWasPressed && !___character.data.fullyPassedOut &&
+                !___character.data.fullyPassedOut &&
                 !___character.data.dead)
                 return false;
 
@@ -445,13 +453,13 @@ public class Piggyback : BaseUnityPlugin
         public bool holdOnFinish => false;
     }
 
-    class BackpackSwapOnCarryPatch
+    private class BackpackSwapOnCarryPatch
     {
         private static bool s_wasBackpackSwapped = false;
 
         [HarmonyPatch(typeof(CharacterCarrying), "StartCarry")]
         [HarmonyPrefix]
-        static bool StartCarryPrefix(ref Character ___character, Character target)
+        private static bool StartCarryPrefix(ref Character ___character, Character target)
         {
             if (!s_swapBackpackSetting.Value) return true;
             s_wasBackpackSwapped = false;
@@ -469,11 +477,11 @@ public class Piggyback : BaseUnityPlugin
 
         [HarmonyPatch(typeof(CharacterCarrying), "Drop")]
         [HarmonyPostfix]
-        static void DropPostfix(ref Character ___character, Character target)
+        private static void DropPostfix(ref Character ___character, Character target)
         {
             if (!s_swapBackpackSetting.Value || !s_wasBackpackSwapped) return;
             BackpackSlot backpackSlot = target.player.backpackSlot;
-            if (!backpackSlot.hasBackpack) return;
+            if (!backpackSlot.hasBackpack || ___character.player.backpackSlot.hasBackpack) return;
             ___character.player.backpackSlot = backpackSlot;
             target.player.backpackSlot = new BackpackSlot(3);
             var targetManagedArray = IBinarySerializable.ToManagedArray(new InventorySyncData(target.player.itemSlots, target.player.backpackSlot, target.player.tempFullSlot));
