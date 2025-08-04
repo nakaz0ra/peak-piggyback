@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
@@ -27,6 +27,7 @@ public class Piggyback : BaseUnityPlugin
     private static ConfigEntry<float> s_holdToCarrySetting;
     private static ConfigEntry<bool> s_swapBackpackSetting;
     private static ConfigEntry<string> s_gamepadDropKeyBindingSetting;
+    private static ConfigEntry<string> s_keyboardCarryKeyBindingSetting;
 
     private static readonly Dictionary<string, string> GamepadKeysToControlPath = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -48,7 +49,97 @@ public class Piggyback : BaseUnityPlugin
         { "Select", "select" }
     };
 
+    private static readonly Dictionary<string, string> KeyboardKeysToControlPath = new(StringComparer.OrdinalIgnoreCase)
+    {
+        { "A", "a" },
+        { "B", "b" },
+        { "C", "c" },
+        { "D", "d" },
+        { "E", "e" },
+        { "F", "f" },
+        { "G", "g" },
+        { "H", "h" },
+        { "I", "i" },
+        { "J", "j" },
+        { "K", "k" },
+        { "L", "l" },
+        { "M", "m" },
+        { "N", "n" },
+        { "O", "o" },
+        { "P", "p" },
+        { "Q", "q" },
+        { "R", "r" },
+        { "S", "s" },
+        { "T", "t" },
+        { "U", "u" },
+        { "V", "v" },
+        { "W", "w" },
+        { "X", "x" },
+        { "Y", "y" },
+        { "Z", "z" },
+        { "1", "1" },
+        { "2", "2" },
+        { "3", "3" },
+        { "4", "4" },
+        { "5", "5" },
+        { "6", "6" },
+        { "7", "7" },
+        { "8", "8" },
+        { "9", "9" },
+        { "0", "0" },
+        { "Space", "space" },
+        { "Enter", "enter" },
+        { "Tab", "tab" },
+        { "Escape", "escape" },
+        { "Backspace", "backspace" },
+        { "Delete", "delete" },
+        { "Insert", "insert" },
+        { "Home", "home" },
+        { "End", "end" },
+        { "PageUp", "pageUp" },
+        { "PageDown", "pageDown" },
+        { "UpArrow", "upArrow" },
+        { "DownArrow", "downArrow" },
+        { "LeftArrow", "leftArrow" },
+        { "RightArrow", "rightArrow" },
+        { "F1", "f1" },
+        { "F2", "f2" },
+        { "F3", "f3" },
+        { "F4", "f4" },
+        { "F5", "f5" },
+        { "F6", "f6" },
+        { "F7", "f7" },
+        { "F8", "f8" },
+        { "F9", "f9" },
+        { "F10", "f10" },
+        { "F11", "f11" },
+        { "F12", "f12" },
+        { "LeftShift", "leftShift" },
+        { "RightShift", "rightShift" },
+        { "LeftCtrl", "leftCtrl" },
+        { "RightCtrl", "rightCtrl" },
+        { "LeftAlt", "leftAlt" },
+        { "RightAlt", "rightAlt" },
+        { "CapsLock", "capsLock" },
+        { "NumLock", "numLock" },
+        { "ScrollLock", "scrollLock" },
+        { "PrintScreen", "printScreen" },
+        { "Pause", "pause" },
+        { "Minus", "minus" },
+        { "Equals", "equals" },
+        { "LeftBracket", "leftBracket" },
+        { "RightBracket", "rightBracket" },
+        { "Backslash", "backslash" },
+        { "Semicolon", "semicolon" },
+        { "Quote", "quote" },
+        { "Comma", "comma" },
+        { "Period", "period" },
+        { "Slash", "slash" },
+        { "Grave", "backquote" }
+    };
+
     private static List<InputAction> s_gamepadDropActions = [];
+    private static List<InputAction> s_keyboardCarryActions = [];
 
     private static readonly Action<CharacterCarrying, Character> DropFromCarryDelegate =
         (Action<CharacterCarrying, Character>)Delegate.CreateDelegate(
@@ -107,9 +198,19 @@ public class Piggyback : BaseUnityPlugin
             "You can combine multiple keys by separating them with a plus (+) sign. This would require you to press " +
             "all the given keys at the same time to drop the player.\n" +
             "Acceptable Gamepad Keys:\nNone, " + string.Join(", ", GamepadKeysToControlPath.Keys));
+        s_keyboardCarryKeyBindingSetting = Config.Bind("Controls", "KeyboardCarryKeybind",
+            "LeftShift+E",
+            "The key binding to pick up or drop a player on Keyboard.\n" +
+            "This key will pick up the nearest player when you're not carrying anyone, " +
+            "and drop the carried player when you are carrying someone.\n" +
+            "You can combine multiple keys by separating them with a plus (+) sign. This would require you to press " +
+            "all the given keys at the same time.\n" +
+            "Acceptable Keyboard Keys:\nNone, " + string.Join(", ", KeyboardKeysToControlPath.Keys));
 
         s_gamepadDropKeyBindingSetting.SettingChanged += (_, _) => SetupGamepadDropAction();
+        s_keyboardCarryKeyBindingSetting.SettingChanged += (_, _) => SetupKeyboardCarryAction();
         SetupGamepadDropAction();
+        SetupKeyboardCarryAction();
     }
 
     private static void SetupGamepadDropAction()
@@ -165,35 +266,157 @@ public class Piggyback : BaseUnityPlugin
         Logger.LogInfo("Custom drop key binding set to: " + string.Join(" + ", bindings));
     }
 
+    private static void SetupKeyboardCarryAction()
+    {
+        var value = s_keyboardCarryKeyBindingSetting.Value.Trim();
+        if (s_keyboardCarryActions.Count > 0)
+        {
+            foreach (var action in s_keyboardCarryActions)
+            {
+                action.Disable();
+                action.Dispose();
+            }
+            s_keyboardCarryActions.Clear();
+        }
+        if (value.ToLower() == "none")
+        {
+            Logger.LogInfo("Keyboard carry key binding is set to 'None'. Disabling custom carry key binding.");
+            return;
+        }
+        var bindings = new HashSet<string>();
+        bool isInvalid = false;
+        foreach (var key in value.Split('+'))
+        {
+            if (KeyboardKeysToControlPath.TryGetValue(key.Trim(), out var controlPath))
+            {
+                bindings.Add($"<Keyboard>/{controlPath}");
+            }
+            else
+            {
+                Logger.LogWarning($"Unknown keyboard key: {key.Trim()}");
+                isInvalid = true;
+            }
+        }
+        if (isInvalid)
+        {
+            var defaultBinding = (string)s_keyboardCarryKeyBindingSetting.DefaultValue;
+            Logger.LogError($"Invalid keyboard key binding detected. Falling back to default binding: {defaultBinding}");
+            bindings.Clear();
+            foreach (var key in defaultBinding.Split('+'))
+            {
+                if (KeyboardKeysToControlPath.TryGetValue(key.Trim(), out var controlPath))
+                    bindings.Add($"<Keyboard>/{controlPath}");
+                else
+                    Logger.LogError($"Unknown default keyboard key: {key.Trim()}");
+            }
+        }
+        foreach (var binding in bindings)
+        {
+            var action = new InputAction($"PickupCarry_{binding}", InputActionType.Button, binding);
+            s_keyboardCarryActions.Add(action);
+            action.Enable();
+        }
+        Logger.LogInfo("Custom carry key binding set to: " + string.Join(" + ", bindings));
+    }
+
     private void Update()
     {
         if (!(bool)(Object)Character.localCharacter) return;
-        if ((bool)(Object)Character.localCharacter.data.carriedPlayer && s_gamepadDropActions.Count > 0)
+        
+        // Handle carry/drop actions with the same key
+        if (s_keyboardCarryActions.Count > 0)
         {
-            if ((s_gamepadDropActions.Count == 1 && s_gamepadDropActions[0].WasPressedThisFrame())
-                || s_gamepadDropActions.All(action => action.IsPressed()))
-                DropPlayerFromCarry(Character.localCharacter.data.carriedPlayer);
-        }
-        if (!s_allowPiggybackByOthersSetting.Value)
-        {
-            if (!Character.localCharacter.data.fullyPassedOut && Character.localCharacter.data.isCarried)
+            bool keyboardCarryPressed = (s_keyboardCarryActions.Count == 1 && s_keyboardCarryActions[0].WasPressedThisFrame())
+                || s_keyboardCarryActions.All(action => action.IsPressed());
+            
+            if (keyboardCarryPressed)
             {
-                DropPlayerFromCarry(Character.localCharacter);
-                return;
+                // If carrying someone, drop them
+                if ((bool)(Object)Character.localCharacter.data.carriedPlayer)
+                {
+                    DropPlayerFromCarry(Character.localCharacter.data.carriedPlayer);
+                }
+                // If not carrying anyone, try to pick up nearest player
+                else
+                {
+                    TryPickupNearestPlayer();
+                }
             }
         }
-        if (s_enablePiggybackSetting.Value)
+        
+        // Handle gamepad drop actions (still separate for gamepad)
+        if ((bool)(Object)Character.localCharacter.data.carriedPlayer && s_gamepadDropActions.Count > 0)
         {
-            if (!Character.localCharacter.data.fullyPassedOut && Character.localCharacter.data.isCarried
-                && IsCharacterDoingIllegalCarryActions(Character.localCharacter))
-                DropPlayerFromCarry(Character.localCharacter);
+            bool gamepadDropPressed = s_gamepadDropActions.Count > 0 && 
+                ((s_gamepadDropActions.Count == 1 && s_gamepadDropActions[0].WasPressedThisFrame())
+                || s_gamepadDropActions.All(action => action.IsPressed()));
+            
+            if (gamepadDropPressed)
+                DropPlayerFromCarry(Character.localCharacter.data.carriedPlayer);
         }
+        
+        // ...existing code...
     }
 
     private static void DropPlayerFromCarry(Character character)
     {
         if (!(bool)(Object)character.data.carrier) return;
         DropFromCarryDelegate(character.data.carrier.refs.carriying, character);
+    }
+
+    private static void TryPickupNearestPlayer()
+    {
+        if (!(bool)(Object)Character.localCharacter) return;
+        if ((bool)(Object)Character.localCharacter.data.carriedPlayer) return;
+        if (!s_enablePiggybackSetting.Value) return;
+
+        Character nearestPlayer = null;
+        float nearestDistance = float.MaxValue;
+        const float maxPickupDistance = 2f;
+
+        // Find all characters in the scene
+        var allCharacters = Object.FindObjectsOfType<Character>();
+        
+        foreach (var character in allCharacters)
+        {
+            if (character == Character.localCharacter) continue; // Skip self
+            if (character.data.dead) continue; // Skip dead players
+            if ((bool)(Object)character.data.carrier) continue; // Skip already carried players
+            if ((bool)(Object)character.data.carriedPlayer) continue; // Skip players who are carrying someone
+            if ((bool)(Object)character.data.currentItem) continue; // Skip players holding items
+            if (IsCharacterDoingIllegalCarryActions(character)) continue; // Skip players doing illegal actions
+
+            // Check backpack restrictions
+            if (s_swapBackpackSetting.Value)
+            {
+                if (Player.localPlayer.backpackSlot.hasBackpack && character.player.backpackSlot.hasBackpack) continue;
+            }
+            else if (Player.localPlayer.backpackSlot.hasBackpack) continue;
+
+            // Check if local character is holding an item that can be used on friends
+            if ((bool)(Object)Character.localCharacter.data.currentItem &&
+                Character.localCharacter.data.currentItem.canUseOnFriend) continue;
+
+            // Check distance
+            float distance = Vector3.Distance(Character.localCharacter.Center, character.Center);
+            if (distance <= maxPickupDistance && distance < nearestDistance)
+            {
+                nearestPlayer = character;
+                nearestDistance = distance;
+            }
+        }
+
+        // Try to pick up the nearest valid player
+        if ((bool)(Object)nearestPlayer)
+        {
+            var startCarryDelegate = (Action<CharacterCarrying, Character>)Delegate.CreateDelegate(
+                typeof(Action<CharacterCarrying, Character>),
+                null,
+                typeof(CharacterCarrying).GetMethod("StartCarry", BindingFlags.Instance | BindingFlags.NonPublic)!
+            );
+            
+            startCarryDelegate(Character.localCharacter.refs.carriying, nearestPlayer);
+        }
     }
 
     private static bool IsCharacterDoingIllegalCarryActions(Character character)
@@ -252,13 +475,12 @@ public class Piggyback : BaseUnityPlugin
         [HarmonyPostfix]
         private static bool IsInteractablePostfix(bool originalResult, CharacterInteractible __instance, Character interactor)
         {
+            // Für bewusstlose Spieler funktioniert die Standard-E-Taste weiterhin
             if (__instance.character.data.fullyPassedOut) return originalResult;
 
-            // Reduce the distance check for carrying (when not passed out)
-            float distance = Vector3.Distance(interactor.Center, __instance.character.Center);
-            if (distance > 2f) return __instance.IsSecondaryInteractible(interactor);
-
-            return originalResult;
+            // Für bewusste Spieler deaktivieren wir die Standard-E-Taste komplett
+            // Das Aufheben wird nur noch ��ber die neue Pickup-Taste gehandelt
+            return false;
         }
 
         [HarmonyPatch(typeof(CharacterCarrying), "Update")]
