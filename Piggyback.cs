@@ -140,6 +140,15 @@ public class Piggyback : BaseUnityPlugin
 
     private static List<InputAction> s_gamepadDropActions = [];
     private static List<InputAction> s_keyboardCarryActions = [];
+    
+    // Cooldown system to prevent immediate dropping after pickup
+    private static float s_dropCooldownTime = 0.5f; // 500ms cooldown
+    private static float s_lastPickupTime = 0f;
+    
+    // Hold-to-carry system for custom button
+    private static float s_holdStartTime = 0f;
+    private static bool s_isHolding = false;
+    private static Character s_targetToPickup = null;
 
     private static readonly Action<CharacterCarrying, Character> DropFromCarryDelegate =
         (Action<CharacterCarrying, Character>)Delegate.CreateDelegate(
@@ -323,23 +332,65 @@ public class Piggyback : BaseUnityPlugin
     {
         if (!(bool)(Object)Character.localCharacter) return;
         
-        // Handle carry/drop actions with the same key
+        // Handle carry/drop actions with hold-to-carry system
         if (s_keyboardCarryActions.Count > 0)
         {
-            bool keyboardCarryPressed = (s_keyboardCarryActions.Count == 1 && s_keyboardCarryActions[0].WasPressedThisFrame())
-                || s_keyboardCarryActions.All(action => action.IsPressed());
-            
-            if (keyboardCarryPressed)
+            bool isAnyCarryActionPressed = s_keyboardCarryActions.Any(action => action.IsPressed());
+            bool isAnyCarryActionReleased = s_keyboardCarryActions.Any(action => action.WasReleasedThisFrame());
+
+            // If carrying someone, handle drop (immediate on press, with cooldown check)
+            if ((bool)(Object)Character.localCharacter.data.carriedPlayer)
             {
-                // If carrying someone, drop them
-                if ((bool)(Object)Character.localCharacter.data.carriedPlayer)
+                bool keyboardCarryPressed = (s_keyboardCarryActions.Count == 1 && s_keyboardCarryActions[0].WasPressedThisFrame())
+                    || s_keyboardCarryActions.All(action => action.IsPressed());
+                
+                if (keyboardCarryPressed)
                 {
-                    DropPlayerFromCarry(Character.localCharacter.data.carriedPlayer);
+                    // Check if cooldown has passed
+                    if (Time.time - s_lastPickupTime >= s_dropCooldownTime)
+                    {
+                        DropPlayerFromCarry(Character.localCharacter.data.carriedPlayer);
+                    }
                 }
-                // If not carrying anyone, try to pick up nearest player
-                else
+            }
+            // If not carrying anyone, handle hold-to-pickup
+            else
+            {
+                // Start holding when button is pressed
+                if (isAnyCarryActionPressed && !s_isHolding)
                 {
-                    TryPickupNearestPlayer();
+                    s_isHolding = true;
+                    s_holdStartTime = Time.time;
+                    s_targetToPickup = FindNearestPlayerToPickup();
+                }
+                // Execute pickup when hold time is reached or button is released (if hold time is 0)
+                else if (s_isHolding && (isAnyCarryActionReleased || 
+                    (s_holdToCarrySetting.Value > 0 && Time.time - s_holdStartTime >= s_holdToCarrySetting.Value)))
+                {
+                    s_isHolding = false;
+
+                    // Only pickup if we held long enough (or hold time is 0) and have a valid target
+                    if (s_targetToPickup != null && 
+                        (s_holdToCarrySetting.Value == 0 || Time.time - s_holdStartTime >= s_holdToCarrySetting.Value))
+                    {
+                        var startCarryDelegate = (Action<CharacterCarrying, Character>)Delegate.CreateDelegate(
+                            typeof(Action<CharacterCarrying, Character>),
+                            null,
+                            typeof(CharacterCarrying).GetMethod("StartCarry", BindingFlags.Instance | BindingFlags.NonPublic)!
+                        );
+                        
+                        startCarryDelegate(Character.localCharacter.refs.carriying, s_targetToPickup);
+                        s_lastPickupTime = Time.time;
+                    }
+
+                    s_targetToPickup = null;
+                }
+                // Cancel holding if button is released too early
+                else if (s_isHolding && isAnyCarryActionReleased && s_holdToCarrySetting.Value > 0 && 
+                    Time.time - s_holdStartTime < s_holdToCarrySetting.Value)
+                {
+                    s_isHolding = false;
+                    s_targetToPickup = null;
                 }
             }
         }
@@ -352,10 +403,14 @@ public class Piggyback : BaseUnityPlugin
                 || s_gamepadDropActions.All(action => action.IsPressed()));
             
             if (gamepadDropPressed)
-                DropPlayerFromCarry(Character.localCharacter.data.carriedPlayer);
+            {
+                // Check if cooldown has passed for gamepad too
+                if (Time.time - s_lastPickupTime >= s_dropCooldownTime)
+                {
+                    DropPlayerFromCarry(Character.localCharacter.data.carriedPlayer);
+                }
+            }
         }
-        
-        // ...existing code...
     }
 
     private static void DropPlayerFromCarry(Character character)
@@ -364,11 +419,11 @@ public class Piggyback : BaseUnityPlugin
         DropFromCarryDelegate(character.data.carrier.refs.carriying, character);
     }
 
-    private static void TryPickupNearestPlayer()
+    private static Character FindNearestPlayerToPickup()
     {
-        if (!(bool)(Object)Character.localCharacter) return;
-        if ((bool)(Object)Character.localCharacter.data.carriedPlayer) return;
-        if (!s_enablePiggybackSetting.Value) return;
+        if (!(bool)(Object)Character.localCharacter) return null;
+        if ((bool)(Object)Character.localCharacter.data.carriedPlayer) return null;
+        if (!s_enablePiggybackSetting.Value) return null;
 
         Character nearestPlayer = null;
         float nearestDistance = float.MaxValue;
@@ -406,17 +461,7 @@ public class Piggyback : BaseUnityPlugin
             }
         }
 
-        // Try to pick up the nearest valid player
-        if ((bool)(Object)nearestPlayer)
-        {
-            var startCarryDelegate = (Action<CharacterCarrying, Character>)Delegate.CreateDelegate(
-                typeof(Action<CharacterCarrying, Character>),
-                null,
-                typeof(CharacterCarrying).GetMethod("StartCarry", BindingFlags.Instance | BindingFlags.NonPublic)!
-            );
-            
-            startCarryDelegate(Character.localCharacter.refs.carriying, nearestPlayer);
-        }
+        return nearestPlayer;
     }
 
     private static bool IsCharacterDoingIllegalCarryActions(Character character)
