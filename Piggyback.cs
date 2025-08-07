@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
@@ -55,6 +56,18 @@ public class Piggyback : BaseUnityPlugin
             typeof(Action<CharacterCarrying, Character>),
             null,
             typeof(CharacterCarrying).GetMethod("Drop", BindingFlags.Instance | BindingFlags.NonPublic)!
+        );
+    private static readonly Func<CharacterInteractible, bool> CarriedByLocalCharacterDelegate =
+        (Func<CharacterInteractible, bool>)Delegate.CreateDelegate(
+            typeof(Func<CharacterInteractible, bool>),
+            null,
+            typeof(CharacterInteractible).GetMethod("CarriedByLocalCharacter", BindingFlags.Instance | BindingFlags.NonPublic)!
+        );
+    private static readonly Func<CharacterInteractible, bool> CanBeCarriedDelegate =
+        (Func<CharacterInteractible, bool>)Delegate.CreateDelegate(
+            typeof(Func<CharacterInteractible, bool>),
+            null,
+            typeof(CharacterInteractible).GetMethod("CanBeCarried", BindingFlags.Instance | BindingFlags.NonPublic)!
         );
 
     private void Awake()
@@ -207,6 +220,24 @@ public class Piggyback : BaseUnityPlugin
 
     private class CanBeCarriedPatch
     {
+        private static readonly Func<GUIManager, IInteractible> GetCurrentInteractable =
+            (Func<GUIManager, IInteractible>)Delegate.CreateDelegate(
+                typeof(Func<GUIManager, IInteractible>),
+                AccessTools.PropertyGetter(typeof(GUIManager), "currentInteractable")
+            );
+
+        private static readonly Dictionary<CharacterInteractible, Coroutine> s_refreshCoroutines = new();
+
+        private static IEnumerator RefreshPromptCoroutine(CharacterInteractible interactible)
+        {
+            while (true)
+            {
+                if (GetCurrentInteractable(GUIManager.instance) == interactible)
+                    GUIManager.instance.RefreshInteractablePrompt();
+                yield return null;
+            }
+        }
+
         [HarmonyPatch(typeof(CharacterInteractible), "CanBeCarried")]
         [HarmonyPostfix]
         private static void CanBeCarriedPostfix(ref bool __result, Character ___character)
@@ -245,6 +276,9 @@ public class Piggyback : BaseUnityPlugin
             if ((bool)(Object)Character.localCharacter.data.currentItem &&
                 Character.localCharacter.data.currentItem.canUseOnFriend) return;
 
+            // If the character is cannibalizable (can be eaten), don't allow carrying
+            if (___character.refs.customization.isCannibalizable) return;
+
             __result = true;
         }
 
@@ -252,13 +286,14 @@ public class Piggyback : BaseUnityPlugin
         [HarmonyPostfix]
         private static bool IsInteractablePostfix(bool originalResult, CharacterInteractible __instance, Character interactor)
         {
-            if (__instance.character.data.fullyPassedOut) return originalResult;
-
+            if (interactor.data.isCarried || !originalResult) return false;
+            if (__instance.character.refs.customization.isCannibalizable) return true;
+            if (CarriedByLocalCharacterDelegate(__instance)) return true;
+            if (!CanBeCarriedDelegate(__instance)) return true; // If we got here, this is the secondary interactible
+            // Is carry interaction
+            if (__instance.character.data.fullyPassedOut) return true;
             // Reduce the distance check for carrying (when not passed out)
-            float distance = Vector3.Distance(interactor.Center, __instance.character.Center);
-            if (distance > 2f) return __instance.IsSecondaryInteractible(interactor);
-
-            return originalResult;
+            return Vector3.Distance(interactor.Center, __instance.character.Center) <= 2f;
         }
 
         [HarmonyPatch(typeof(CharacterCarrying), "Update")]
@@ -328,6 +363,26 @@ public class Piggyback : BaseUnityPlugin
                 return false;
             return originalResult;
         }
+
+        [HarmonyPatch(typeof(CharacterInteractible), "HoverEnter")]
+        [HarmonyPostfix]
+        private static void HoverEnterPostfix(CharacterInteractible __instance)
+        {
+            if (s_refreshCoroutines.ContainsKey(__instance)) return;
+            var coroutine = __instance.StartCoroutine(RefreshPromptCoroutine(__instance));
+            s_refreshCoroutines[__instance] = coroutine;
+        }
+
+        [HarmonyPatch(typeof(CharacterInteractible), "HoverExit")]
+        [HarmonyPostfix]
+        private static void HoverExitPostfix(CharacterInteractible __instance)
+        {
+            if (s_refreshCoroutines.TryGetValue(__instance, out var coroutine))
+            {
+                __instance.StopCoroutine(coroutine);
+                s_refreshCoroutines.Remove(__instance);
+            }
+        }
     }
 
     private class SpectateViewPatch
@@ -385,42 +440,6 @@ public class Piggyback : BaseUnityPlugin
 
     private class HoldToCarryPatch
     {
-        private static readonly Func<CharacterInteractible, bool> CarriedByLocalCharacterDelegate =
-            (Func<CharacterInteractible, bool>)Delegate.CreateDelegate(
-                typeof(Func<CharacterInteractible, bool>),
-                null,
-                typeof(CharacterInteractible).GetMethod("CarriedByLocalCharacter", BindingFlags.Instance | BindingFlags.NonPublic)!
-            );
-
-        [HarmonyPatch(typeof(CharacterInteractible), "Start")]
-        [HarmonyPostfix]
-        private static void ReplaceCharacterInteractibleComponent(CharacterInteractible __instance)
-        {
-            var go = __instance.gameObject;
-            if (go.GetComponent<CharacterInteractibleConstant>() != null) return;
-            var newComp = go.AddComponent<CharacterInteractibleConstant>();
-            newComp.character = __instance.character;
-            Destroy(__instance);
-        }
-
-        [HarmonyPatch(typeof(CharacterInteractible), "Interact")]
-        [HarmonyPrefix]
-        private static bool CharacterInteractibleInteractPrefix(CharacterInteractible __instance, Character interactor)
-        {
-            return CarriedByLocalCharacterDelegate(__instance)
-                   || __instance.character.data.fullyPassedOut
-                   || s_holdToCarrySetting.Value == 0.0f;
-        }
-    }
-
-    public class CharacterInteractibleConstant : CharacterInteractible, IInteractibleConstant
-    {
-        private static readonly Func<CharacterInteractible, bool> CanBeCarriedDelegate =
-            (Func<CharacterInteractible, bool>)Delegate.CreateDelegate(
-                typeof(Func<CharacterInteractible, bool>),
-                null,
-                typeof(CharacterInteractible).GetMethod("CanBeCarried", BindingFlags.Instance | BindingFlags.NonPublic)!
-            );
         private static readonly Action<CharacterCarrying, Character> StartCarryDelegate =
             (Action<CharacterCarrying, Character>)Delegate.CreateDelegate(
                 typeof(Action<CharacterCarrying, Character>),
@@ -428,29 +447,47 @@ public class Piggyback : BaseUnityPlugin
                 typeof(CharacterCarrying).GetMethod("StartCarry", BindingFlags.Instance | BindingFlags.NonPublic)!
             );
 
-        private void Start()
+        private static bool s_isAttemptingToCarry = false;
+
+        [HarmonyPatch(typeof(CharacterInteractible), "Interact")]
+        [HarmonyPrefix]
+        private static bool CharacterInteractibleInteractPrefix(CharacterInteractible __instance, Character interactor)
         {
-            Logger.LogInfo($"CharacterInteractibleConstant added to {character}");
+            s_isAttemptingToCarry = false;
+            if (CarriedByLocalCharacterDelegate(__instance)) return true;
+            if (__instance.character.refs.customization.isCannibalizable) return true;
+            if (__instance.character.data.fullyPassedOut || s_holdToCarrySetting.Value == 0.0f) return true;
+            s_isAttemptingToCarry = true;
+            return false;
         }
 
-        public bool IsConstantlyInteractable(Character interactor)
+        [HarmonyPatch(typeof(CharacterInteractible), "IsConstantlyInteractable")]
+        [HarmonyPostfix]
+        private static bool CharacterInteractibleIsConstantlyInteractablePostfix(bool originalResult, CharacterInteractible __instance)
         {
-            return CanBeCarriedDelegate(this);
+            return originalResult || CanBeCarriedDelegate(__instance);
         }
 
-        public float GetInteractTime(Character interactor) => s_holdToCarrySetting.Value;
-
-        public void Interact_CastFinished(Character interactor)
+        [HarmonyPatch(typeof(CharacterInteractible), "GetInteractTime")]
+        [HarmonyPostfix]
+        private static float CharacterInteractibleGetInteractTimePostfix(float originalResult, CharacterInteractible __instance)
         {
-            if (CanBeCarriedDelegate(this))
-                StartCarryDelegate(interactor.refs.carriying, character);
+            return __instance.character.refs.customization.isCannibalizable ? originalResult : s_holdToCarrySetting.Value;
         }
 
-        public void CancelCast(Character interactor) {}
-
-        public void ReleaseInteract(Character interactor) {}
-
-        public bool holdOnFinish => false;
+        [HarmonyPatch(typeof(CharacterInteractible), "Interact_CastFinished")]
+        [HarmonyPrefix]
+        private static bool CharacterInteractibleCastFinishedPrefix(CharacterInteractible __instance, Character interactor)
+        {
+            if (!interactor.IsLocal) return false;
+            // If the player is not attempting to carry, meaning it is trying to cannibalize (eat) the character,
+            // return true to allow the original method to run.
+            if (!s_isAttemptingToCarry) return true;
+            if (CanBeCarriedDelegate(__instance))
+                StartCarryDelegate(interactor.refs.carriying, __instance.character);
+            s_isAttemptingToCarry = false;
+            return false;
+        }
     }
 
     private class BackpackSwapOnCarryPatch

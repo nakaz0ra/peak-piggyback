@@ -1,3 +1,9 @@
+## v1.4.0
+- Ensured compatibility with the game's new cannibalism feature, now actually eating the players instead of carrying
+  them when the prompt says "Eat".
+  - If you see a player as a chicken, you will need to satiate your hunger before you can carry them. Note that even
+  if you were to carry a player that you see as a chicken you'd just pass out from the added weight.
+
 ## v1.3.1
 - Minor fixes.
 - You can now set the **GamepadDropKeybind** setting to `None` to disable the custom keybind to drop the carried player.
