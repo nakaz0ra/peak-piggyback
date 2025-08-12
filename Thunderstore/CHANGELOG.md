@@ -1,3 +1,6 @@
+## v1.4.1
+- Updated for the Mesa update (game version 1.20.a).
+
 ## v1.4.0
 - Ensured compatibility with the game's new cannibalism feature, now actually eating the players instead of carrying
   them when the prompt says "Eat".
