@@ -58,6 +58,13 @@ can carry that player.\
 **Defaults to `true`**.
 
 
+- **AccurateWeight**\
+If `true`, the full weight of the player you're carrying, including the items they are carrying, will be added to your
+own weight. This will also consider the weight reduction provided by any balloons that the carried player may have.\
+If `false`, it won't add the weight of the items they are carrying (vanilla behaviour).\
+**Defaults to `false`**.
+
+
 - **GamepadDropKeybind**\
 The key binding to drop the player you're carrying.\
 This only applies to Gamepad, the binding on keyboard should be the Number 4 key by default.\

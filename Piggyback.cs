@@ -27,6 +27,7 @@ public class Piggyback : BaseUnityPlugin
     private static ConfigEntry<bool> s_spectateViewSetting;
     private static ConfigEntry<float> s_holdToCarrySetting;
     private static ConfigEntry<bool> s_swapBackpackSetting;
+    private static ConfigEntry<bool> s_accurateWeightSetting;
     private static ConfigEntry<string> s_gamepadDropKeyBindingSetting;
 
     private static readonly Dictionary<string, string> GamepadKeysToControlPath = new(StringComparer.OrdinalIgnoreCase)
@@ -69,6 +70,12 @@ public class Piggyback : BaseUnityPlugin
             null,
             typeof(CharacterInteractible).GetMethod("CanBeCarried", BindingFlags.Instance | BindingFlags.NonPublic)!
         );
+    private static readonly Action<CharacterCarrying, Character> StartCarryDelegate =
+        (Action<CharacterCarrying, Character>)Delegate.CreateDelegate(
+            typeof(Action<CharacterCarrying, Character>),
+            null,
+            typeof(CharacterCarrying).GetMethod("StartCarry", BindingFlags.Instance | BindingFlags.NonPublic)!
+        );
 
     private void Awake()
     {
@@ -83,6 +90,7 @@ public class Piggyback : BaseUnityPlugin
             m_harmony.PatchAll(typeof(HoldToCarryPatch));
         }
         m_harmony.PatchAll(typeof(BackpackSwapOnCarryPatch));
+        m_harmony.PatchAll(typeof(WeightPatch));
 
         Logger.LogInfo($"Plugin {MyPluginInfo.PLUGIN_NAME} loaded");
     }
@@ -113,6 +121,11 @@ public class Piggyback : BaseUnityPlugin
             "The backpack will be returned to you when you drop the player.\n" +
             "If false or if the player you want to carry already has a backpack, you must manually drop your " +
             "backpack before you can carry that player.");
+        s_accurateWeightSetting = Config.Bind("General", "AccurateWeight", false,
+            "If true, the full weight of the player you're carrying, including the items they are " +
+            "carrying, will be added to your own weight.\nThis will also consider the weight reduction provided by " +
+            "any balloons that the carried player may have.\nIf false, it won't add the weight of the items they are " +
+            "carrying (vanilla behaviour).");
         s_gamepadDropKeyBindingSetting = Config.Bind("Controls", "GamepadDropKeybind",
             "LeftShoulder+RightShoulder",
             "The key binding to drop the player you're carrying. " +
@@ -215,7 +228,8 @@ public class Piggyback : BaseUnityPlugin
             || character.data.isJumping
             || character.data.isClimbingAnything
             || character.data.isCrouching
-            || character.data.isReaching;
+            || character.data.isReaching
+            || (bool)(Object)character.data.carriedPlayer;
     }
 
     private class CanBeCarriedPatch
@@ -265,9 +279,6 @@ public class Piggyback : BaseUnityPlugin
 
             // If the character is holding an item or doing an illegal action, don't allow carrying
             if ((bool)(Object)___character.data.currentItem || IsCharacterDoingIllegalCarryActions(___character)) return;
-
-            // If the character is carrying another player, don't allow carrying
-            if ((bool)(Object)___character.data.carriedPlayer) return;
 
             // If the character is already being carried, don't allow carrying
             if ((bool)(Object)___character.data.carrier) return;
@@ -349,10 +360,13 @@ public class Piggyback : BaseUnityPlugin
             __instance.spectateLeftWasPressed = false;
             __instance.spectateRightWasPressed = false;
             __instance.selectBackpackWasPressed = false;
-            __instance.scrollButtonLeftWasPressed = false;
-            __instance.scrollButtonRightWasPressed = false;
+            __instance.scrollBackwardWasPressed = false;
+            __instance.scrollForwardWasPressed = false;
+            __instance.scrollBackwardIsPressed = false;
+            __instance.scrollForwardIsPressed = false;
             __instance.selectSlotForwardWasPressed = false;
             __instance.selectSlotBackwardWasPressed = false;
+            __instance.unselectSlotWasPressed = false;
         }
 
         [HarmonyPatch(typeof(CharacterInput), "SelectSlotWasPressed")]
@@ -440,13 +454,6 @@ public class Piggyback : BaseUnityPlugin
 
     private class HoldToCarryPatch
     {
-        private static readonly Action<CharacterCarrying, Character> StartCarryDelegate =
-            (Action<CharacterCarrying, Character>)Delegate.CreateDelegate(
-                typeof(Action<CharacterCarrying, Character>),
-                null,
-                typeof(CharacterCarrying).GetMethod("StartCarry", BindingFlags.Instance | BindingFlags.NonPublic)!
-            );
-
         private static bool s_isAttemptingToCarry = false;
 
         [HarmonyPatch(typeof(CharacterInteractible), "Interact")]
@@ -492,14 +499,20 @@ public class Piggyback : BaseUnityPlugin
 
     private class BackpackSwapOnCarryPatch
     {
-        private static bool s_wasBackpackSwapped = false;
+        private static BackpackSlot s_swappedBackpack = null;
+        private static bool WasBackpackSwapped => s_swappedBackpack != null;
+
+        private static bool IsSameBackpack(BackpackSlot a, BackpackSlot b)
+        {
+            return a == b || (a.data != null && b.data != null && a.data.guid == b.data.guid);
+        }
 
         [HarmonyPatch(typeof(CharacterCarrying), "StartCarry")]
         [HarmonyPrefix]
         private static bool StartCarryPrefix(ref Character ___character, Character target)
         {
             if (!s_swapBackpackSetting.Value) return true;
-            s_wasBackpackSwapped = false;
+            s_swappedBackpack = null;
             BackpackSlot backpackSlot = ___character.player.backpackSlot;
             if (!backpackSlot.hasBackpack || target.player.backpackSlot.hasBackpack) return true;
             target.player.backpackSlot = backpackSlot;
@@ -508,23 +521,84 @@ public class Piggyback : BaseUnityPlugin
             ___character.player.photonView.RPC("SyncInventoryRPC", RpcTarget.All, characterManagedArray, true);
             var targetManagedArray = IBinarySerializable.ToManagedArray(new InventorySyncData(target.player.itemSlots, target.player.backpackSlot, target.player.tempFullSlot));
             target.player.photonView.RPC("SyncInventoryRPC", RpcTarget.All, targetManagedArray, true);
-            s_wasBackpackSwapped = true;
+            s_swappedBackpack = backpackSlot;
             return true;
         }
 
-        [HarmonyPatch(typeof(CharacterCarrying), "Drop")]
-        [HarmonyPostfix]
-        private static void DropPostfix(ref Character ___character, Character target)
+        [HarmonyPatch(typeof(CharacterCarrying), "RPCA_Drop")]
+        [HarmonyPrefix]
+        private static void DropPostfix(ref Character ___character, PhotonView targetView)
         {
-            if (!s_swapBackpackSetting.Value || !s_wasBackpackSwapped) return;
+            // Check for setting, if the backpack was swapped, and - because this will run on all clients that have
+            // the mod - ensure that only the client that is doing the dropping will swap back the backpack.
+            if (!s_swapBackpackSetting.Value || !WasBackpackSwapped || Character.localCharacter != ___character)
+                return;
+            if (___character.player.backpackSlot.hasBackpack)
+            {
+                // The character has a backpack somehow (???), won't swap back.
+                s_swappedBackpack = null;
+                return;
+            }
+            Character target = targetView.GetComponent<Character>();
+            if (!target.player.backpackSlot.hasBackpack)
+            {
+                // The character we're dropping does not have our backpack (???)
+                // We'll see if someone else has it and try to equip it back if nobody has it.
+                if (!PlayerHandler.GetAllPlayers().Any(p => IsSameBackpack(p.backpackSlot, s_swappedBackpack)))
+                {
+                    s_swappedBackpack.prefab.Interact(___character);
+                }
+                s_swappedBackpack = null;
+                return;
+            }
             BackpackSlot backpackSlot = target.player.backpackSlot;
-            if (!backpackSlot.hasBackpack || ___character.player.backpackSlot.hasBackpack) return;
             ___character.player.backpackSlot = backpackSlot;
             target.player.backpackSlot = new BackpackSlot(3);
             var targetManagedArray = IBinarySerializable.ToManagedArray(new InventorySyncData(target.player.itemSlots, target.player.backpackSlot, target.player.tempFullSlot));
             target.player.photonView.RPC("SyncInventoryRPC", RpcTarget.All, targetManagedArray, true);
             var characterManagedArray = IBinarySerializable.ToManagedArray(new InventorySyncData(___character.player.itemSlots, ___character.player.backpackSlot, ___character.player.tempFullSlot));
             ___character.player.photonView.RPC("SyncInventoryRPC", RpcTarget.All, characterManagedArray, true);
+            s_swappedBackpack = null;
+        }
+    }
+
+    private class WeightPatch
+    {
+        [HarmonyPatch(typeof(CharacterAfflictions), "UpdateWeight")]
+        [HarmonyPostfix]
+        private static void UpdateWeightPostfix(CharacterAfflictions __instance)
+        {
+            if (!s_accurateWeightSetting.Value) return;
+            if (!(bool)(Object)__instance.character.data.carriedPlayer) return;
+
+            float playerWeight = __instance.GetCurrentStatus(CharacterAfflictions.STATUSTYPE.Weight);
+            playerWeight -= 0.025f * 8.0f;
+            if (playerWeight < 0.0f) playerWeight = 0.0f;
+
+            int carriedWeightTotal = 0;
+            Character carriedCharacter = __instance.character.data.carriedPlayer;
+            if ((bool)(Object)carriedCharacter)
+            {
+                int carriedWeight = 8; // 8 is the base weight of a character (vanilla value).
+                for (int index = 0; index < carriedCharacter.player.itemSlots.Length; ++index)
+                {
+                    ItemSlot itemSlot = carriedCharacter.player.itemSlots[index];
+                    if ((bool)(Object)itemSlot.prefab) carriedWeight += itemSlot.prefab.CarryWeight;
+                }
+                BackpackSlot backpackSlot = carriedCharacter.player.backpackSlot;
+                if (!backpackSlot.IsEmpty() && backpackSlot.data.TryGetDataEntry(DataEntryKey.BackpackData, out BackpackData backpackData))
+                {
+                    for (int index = 0; index < backpackData.itemSlots.Length; ++index)
+                    {
+                        ItemSlot itemSlot = backpackData.itemSlots[index];
+                        if (!itemSlot.IsEmpty()) carriedWeight += itemSlot.prefab.CarryWeight;
+                    }
+                }
+                carriedWeightTotal += carriedWeight;
+            }
+            float carriedWeightF = 0.025f * carriedWeightTotal;
+            float finalWeight = playerWeight + carriedWeightF;
+            __instance.SetStatus(CharacterAfflictions.STATUSTYPE.Weight, finalWeight);
         }
     }
 }

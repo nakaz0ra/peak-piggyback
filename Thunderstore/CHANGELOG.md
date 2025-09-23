@@ -1,3 +1,12 @@
+## v1.4.2
+- Updated for the DILLYDALLY update (game version 1.30.a).
+- Added the following new setting and respective feature:
+  - **AccurateWeight** - If `true`, the full weight of the player you're carrying, including the items they are
+  carrying, will be added to your own weight. This will also consider the weight reduction provided by any balloons
+  that the carried player may have. If `false`, it won't add the weight of the items they are 
+  carrying (vanilla behaviour). **Defaults to `false`**.
+- Minor fixes.
+
 ## v1.4.1
 - Updated for the Mesa update (game version 1.20.a).
 
