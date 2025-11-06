@@ -1,3 +1,6 @@
+## v1.4.3
+- Updated for the ROOTS update.
+
 ## v1.4.2
 - Updated for the DILLYDALLY update (game version 1.30.a).
 - Added the following new setting and respective feature:

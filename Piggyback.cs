@@ -259,6 +259,8 @@ public class Piggyback : BaseUnityPlugin
             // If the original method already returned true, skip
             if (__result) return;
 
+            if (___character.isBot) return;
+
             // If this is the local character (the player's character itself), don't allow carrying
             if (___character.IsLocal) return;
 
