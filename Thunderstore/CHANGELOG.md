@@ -1,3 +1,6 @@
+## v1.4.4
+- Updated for The Final Ascent update (game version 2.0.a).
+
 ## v1.4.3
 - Updated for the ROOTS update.
 

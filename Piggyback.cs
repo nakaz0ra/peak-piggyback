@@ -229,6 +229,7 @@ public class Piggyback : BaseUnityPlugin
             || character.data.isClimbingAnything
             || character.data.isCrouching
             || character.data.isReaching
+            || character.data.isKicking
             || (bool)(Object)character.data.carriedPlayer;
     }
 
@@ -271,10 +272,15 @@ public class Piggyback : BaseUnityPlugin
             {
                 // When the SwapBackpack setting is enabled, don't allow carrying if both the local player
                 // and the target carry character have a backpack.
-                if (Player.localPlayer.backpackSlot.hasBackpack && ___character.player.backpackSlot.hasBackpack) return;
+                if (!Player.localPlayer.backpackSlot.IsEmpty() && !___character.player.backpackSlot.IsEmpty()) return;
             }
             // If the SwapBackpack setting is disabled, don't allow carrying only if the local player has a backpack
-            else if (Player.localPlayer.backpackSlot.hasBackpack) return;
+            else if (!Player.localPlayer.backpackSlot.IsEmpty()) return;
+
+            // If either the local player or the target character has a rocket lit or active, don't allow carrying
+            if (___character.refs.movement.rocketLit || ___character.refs.movement.rocketActive ||
+                Character.localCharacter.refs.movement.rocketLit || Character.localCharacter.refs.movement.rocketActive)
+                return;
 
             // If the local player character is climbing anything, don't allow carrying
             if (Character.localCharacter.data.isClimbingAnything) return;
@@ -320,6 +326,9 @@ public class Piggyback : BaseUnityPlugin
 
             // Drop the carried player if they are holding an item
             if ((bool)(Object)___character.data.carriedPlayer.data.currentItem) return true;
+            // Drop the carried player if they have a rocket lit or active
+            if (___character.data.carriedPlayer.refs.movement.rocketLit ||
+                ___character.data.carriedPlayer.refs.movement.rocketActive) return true;
             // Drop the carried player if they are doing illegal carry actions
             if (IsCharacterDoingIllegalCarryActions(___character.data.carriedPlayer))
                 return true;
@@ -404,9 +413,9 @@ public class Piggyback : BaseUnityPlugin
     private class SpectateViewPatch
     {
         private static readonly Func<MainCamera, CameraOverride> GetCamOverride = ExpressionUtils.CreateFieldGetter<MainCamera, CameraOverride>("camOverride");
-        private static readonly Action<MainCameraMovement> SpectateDelegate =
-            (Action<MainCameraMovement>)Delegate.CreateDelegate(
-                typeof(Action<MainCameraMovement>),
+        private static readonly Action<MainCameraMovement, bool> SpectateDelegate =
+            (Action<MainCameraMovement, bool>)Delegate.CreateDelegate(
+                typeof(Action<MainCameraMovement, bool>),
                 null,
                 typeof(MainCameraMovement).GetMethod("Spectate", BindingFlags.Instance | BindingFlags.NonPublic)!
             );
@@ -425,14 +434,15 @@ public class Piggyback : BaseUnityPlugin
             MainCameraMovement __instance,
             MainCamera ___cam,
             bool ___isGodCam,
-            ref bool ___isSpectating
+            ref bool ___isSpectating,
+            ref bool ___isRocketing
         ) {
             if (!s_spectateViewSetting.Value) return;
-            if (___isGodCam || ___isSpectating) return;
+            if (___isGodCam || ___isSpectating || ___isRocketing) return;
             if (!(bool)(Object)Character.localCharacter) return;
             if (!Character.localCharacter.data.isCarried) return;
             if ((bool)(Object)GetCamOverride(___cam)) return;
-            SpectateDelegate(__instance);
+            SpectateDelegate(__instance, false);
             ___isSpectating = true;
         }
 
@@ -516,7 +526,8 @@ public class Piggyback : BaseUnityPlugin
             if (!s_swapBackpackSetting.Value) return true;
             s_swappedBackpack = null;
             BackpackSlot backpackSlot = ___character.player.backpackSlot;
-            if (!backpackSlot.hasBackpack || target.player.backpackSlot.hasBackpack) return true;
+            // Nothing to swap if the character doesn't have a backpack or if the carry target already has a backpack.
+            if (backpackSlot.IsEmpty() || !target.player.backpackSlot.IsEmpty()) return true;
             target.player.backpackSlot = backpackSlot;
             ___character.player.backpackSlot = new BackpackSlot(3);
             var characterManagedArray = IBinarySerializable.ToManagedArray(new InventorySyncData(___character.player.itemSlots, ___character.player.backpackSlot, ___character.player.tempFullSlot));
@@ -535,14 +546,14 @@ public class Piggyback : BaseUnityPlugin
             // the mod - ensure that only the client that is doing the dropping will swap back the backpack.
             if (!s_swapBackpackSetting.Value || !WasBackpackSwapped || Character.localCharacter != ___character)
                 return;
-            if (___character.player.backpackSlot.hasBackpack)
+            if (!___character.player.backpackSlot.IsEmpty())
             {
                 // The character has a backpack somehow (???), won't swap back.
                 s_swappedBackpack = null;
                 return;
             }
             Character target = targetView.GetComponent<Character>();
-            if (!target.player.backpackSlot.hasBackpack)
+            if (target.player.backpackSlot.IsEmpty())
             {
                 // The character we're dropping does not have our backpack (???)
                 // We'll see if someone else has it and try to equip it back if nobody has it.
